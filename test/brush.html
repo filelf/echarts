@@ -334,7 +334,9 @@
                 var trackMax = 30;
 
                 chart.setOption(option);
-                chart.dispatchAction({type: 'brush', brushRanges: [
+                chart.setOption({});
+
+                chart.dispatchAction({type: 'brush', areas: [
                     {brushType: 'rect', range: [[200, 300], [100, 350]]}
                 ]});
 
@@ -343,10 +345,10 @@
                     var dim2Sum = 0;
                     var dim3Sum = 0;
                     var countBySeries = [];
-                    var brushComponent = params.brushComponents[0];
+                    var brushComponent = params.batch[0];
 
-                    for (var sIdx = 0; sIdx < brushComponent.series.length; sIdx++) {
-                        var rawIndices = brushComponent.series[sIdx].rawIndices;
+                    for (var sIdx = 0; sIdx < brushComponent.selected.length; sIdx++) {
+                        var rawIndices = brushComponent.selected[sIdx].dataIndex;
                         brushed.push('[Series ' + sIdx + '] ' + rawIndices.join(', '));
                         for (var i = 0; i < rawIndices.length; i++) {
                             dim2Sum += dataList[sIdx][rawIndices[i]][2];
@@ -499,7 +501,12 @@
                         }
                         return res;
                     };
-                    convertedData = convertData(data);
+                    var convertedData = [
+                        convertData(data),
+                        convertData(data.slice().sort(function (a, b) {
+                            return b.value - a.value;
+                        }).slice(0, 6))
+                    ];
 
                     var chart = echarts.init(document.getElementById('main1'));
                     var elSt = document.getElementById('main1-st');
@@ -579,6 +586,11 @@
                                 outOfBrush: {
                                     color: '#abc'
                                 },
+                                brushStyle: {
+                                    borderWidth: 2,
+                                    color: 'rgba(0,0,0,0.2)',
+                                    borderColor: 'rgba(0,0,0,0.5)',
+                                },
                                 seriesIndex: [0, 1],
                                 throttleType: smSettings.throttleType,
                                 throttleDelay: smSettings.throttleDelay,
@@ -611,7 +623,7 @@
                                     name: 'pm2.5',
                                     type: 'scatter',
                                     coordinateSystem: 'geo',
-                                    data: convertedData,
+                                    data: convertedData[0],
                                     symbolSize: function (val) {
                                         return val[2] / 10;
                                     },
@@ -635,9 +647,7 @@
                                     name: 'Top 5',
                                     type: 'effectScatter',
                                     coordinateSystem: 'geo',
-                                    data: convertData(data.sort(function (a, b) {
-                                        return b.value - a.value;
-                                    }).slice(0, 6)),
+                                    data: convertedData[1],
                                     symbolSize: function (val) {
                                         return val[2] / 10;
                                     },
@@ -729,7 +739,7 @@
                         chart.setOption(option, true);
                         chart.dispatchAction({
                             type: 'brush',
-                            brushRanges: [
+                            areas: [
                                 // {
                                 //     geoIndex: 0,
                                 //     brushType: 'polygon',
@@ -738,8 +748,8 @@
                                 {
                                     geoIndex: 0,
                                     brushType: 'polygon',
-                                    // geoRange: [[121.15,31.89], [120.95,31.39], [112.91,27.87], [118.78,32.04]]
-                                    geoRange: [[121.15, 31.89], [121.15, 31.89], [109.781327, 39.608266], [120.38, 37.35], [122.207216, 29.985295], [123.97, 47.33]]
+                                    // coordRange: [[121.15,31.89], [120.95,31.39], [112.91,27.87], [118.78,32.04]]
+                                    coordRange: [[121.15, 31.89], [121.15, 31.89], [109.781327, 39.608266], [120.38, 37.35], [122.207216, 29.985295], [123.97, 47.33]]
                                     // geoRange: [[117.27,31.86], [114.31,30.52], [126.57,43.87]]
                                 }
                             ]
@@ -760,15 +770,15 @@
                             var topWhere;
                             var sum = 0;
                             var count = 0;
-                            var brushComponent = params.brushComponents[0];
+                            var brushComponent = params.batch[0];
                             var selectedItems = [];
 
-                            for (var sIdx = 0; sIdx < brushComponent.series.length; sIdx++) {
-                                var rawIndices = brushComponent.series[sIdx].rawIndices;
+                            for (var sIdx = 0; sIdx < brushComponent.selected.length; sIdx++) {
+                                var rawIndices = brushComponent.selected[sIdx].dataIndex;
                                 var placesBySeries = [];
                                 for (var i = 0; i < rawIndices.length; i++) {
                                     var rawIndex = rawIndices[i];
-                                    var item = convertedData[rawIndex];
+                                    var item = convertedData[sIdx][rawIndex];
                                     var value = item.value[2];
                                     sum += value;
                                     count++;
@@ -926,6 +936,7 @@
                         left: 10
                     },
                     brush: {
+                        xAxisIndex: 0
                     },
                     toolbox: {
                         feature: {
@@ -1004,10 +1015,10 @@
 
                 function renderBrushed(params) {
                     var brushed = [];
-                    var brushComponent = params.brushComponents[0];
+                    var brushComponent = params.batch[0];
 
-                    for (var sIdx = 0; sIdx < brushComponent.series.length; sIdx++) {
-                        var rawIndices = brushComponent.series[sIdx].rawIndices;
+                    for (var sIdx = 0; sIdx < brushComponent.selected.length; sIdx++) {
+                        var rawIndices = brushComponent.selected[sIdx].dataIndex;
                         brushed.push('[Series ' + sIdx + '] ' + rawIndices.join(', '));
                     }
 

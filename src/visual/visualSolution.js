@@ -7,6 +7,16 @@ define(function(require) {
     var VisualMapping = require('./VisualMapping');
     var each = zrUtil.each;
 
+    function hasKeys(obj) {
+        if (obj) {
+            for (var name in obj){
+                if (obj.hasOwnProperty(name)) {
+                    return true;
+                }
+            }
+        }
+    }
+
     var visualSolution = {
 
         /**
@@ -66,12 +76,12 @@ define(function(require) {
             // will be reset. Otherwise, all keys remain.
             var has;
             zrUtil.each(keys, function (key) {
-                if (newOption.hasOwnProperty(key)) {
+                if (newOption.hasOwnProperty(key) && hasKeys(newOption[key])) {
                     has = true;
                 }
             });
             has && zrUtil.each(keys, function (key) {
-                if (newOption.hasOwnProperty(key)) {
+                if (newOption.hasOwnProperty(key) && hasKeys(newOption[key])) {
                     thisOption[key] = zrUtil.clone(newOption[key]);
                 }
                 else {
@@ -114,6 +124,13 @@ define(function(require) {
 
             function eachItem(valueOrIndex, index) {
                 dataIndex = dimension == null ? valueOrIndex : index;
+
+                var rawDataItem = data.getRawDataItem(dataIndex);
+                // Consider performance
+                if (rawDataItem && rawDataItem.visualMap === false) {
+                    return;
+                }
+
                 var valueState = getValueState.call(scope, valueOrIndex);
                 var mappings = visualMappings[valueState];
                 var visualTypes = visualTypesMap[valueState];

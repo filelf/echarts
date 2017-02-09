@@ -10,30 +10,48 @@ define(function (require) {
     function getFixedItemStyle(model, scale) {
         var itemStyle = model.getItemStyle();
         var areaColor = model.get('areaColor');
-        if (areaColor) {
+
+        // If user want the color not to be changed when hover,
+        // they should both set areaColor and color to be null.
+        if (areaColor != null) {
             itemStyle.fill = areaColor;
         }
 
         return itemStyle;
     }
 
-    function updateMapSelectHandler(mapOrGeoModel, group, api, fromView) {
+    function updateMapSelectHandler(mapDraw, mapOrGeoModel, group, api, fromView) {
         group.off('click');
-        mapOrGeoModel.get('selectedMode')
-            && group.on('click', function (e) {
+        group.off('mousedown');
+
+        if (mapOrGeoModel.get('selectedMode')) {
+
+            group.on('mousedown', function () {
+                mapDraw._mouseDownFlag = true;
+            });
+
+            group.on('click', function (e) {
+                if (!mapDraw._mouseDownFlag) {
+                    return;
+                }
+                mapDraw._mouseDownFlag = false;
+
                 var el = e.target;
-                while (!el.__region) {
+                while (!el.__regions) {
                     el = el.parent;
                 }
                 if (!el) {
                     return;
                 }
 
-                var region = el.__region;
                 var action = {
                     type: (mapOrGeoModel.mainType === 'geo' ? 'geo' : 'map') + 'ToggleSelect',
-                    name: region.name,
-                    from: fromView.uid
+                    batch: zrUtil.map(el.__regions, function (region) {
+                        return {
+                            name: region.name,
+                            from: fromView.uid
+                        };
+                    })
                 };
                 action[mapOrGeoModel.mainType + 'Id'] = mapOrGeoModel.id;
 
@@ -41,14 +59,15 @@ define(function (require) {
 
                 updateMapSelected(mapOrGeoModel, group);
             });
+        }
     }
 
     function updateMapSelected(mapOrGeoModel, group) {
         // FIXME
         group.eachChild(function (otherRegionEl) {
-            if (otherRegionEl.__region) {
-                otherRegionEl.trigger(mapOrGeoModel.isSelected(otherRegionEl.__region.name) ? 'emphasis' : 'normal');
-            }
+            zrUtil.each(otherRegionEl.__regions, function (region) {
+                otherRegionEl.trigger(mapOrGeoModel.isSelected(region.name) ? 'emphasis' : 'normal');
+            });
         });
     }
 
@@ -80,6 +99,14 @@ define(function (require) {
          * @private
          */
         this._updateGroup = updateGroup;
+
+        /**
+         * This flag is used to make sure that only one among
+         * `pan`, `zoom`, `click` can occurs, otherwise 'selected'
+         * action may be triggered when `pan`, which is unexpected.
+         * @type {booelan}
+         */
+        this._mouseDownFlag;
     }
 
     MapDraw.prototype = {
@@ -88,8 +115,16 @@ define(function (require) {
 
         draw: function (mapOrGeoModel, ecModel, api, fromView, payload) {
 
-            // geoModel has no data
+            var isGeo = mapOrGeoModel.mainType === 'geo';
+
+            // map series has data, geo model that controlled by map series
+            // has no data, otherwise data exists.
             var data = mapOrGeoModel.getData && mapOrGeoModel.getData();
+            isGeo && ecModel.eachComponent({mainType: 'series', subType: 'map'}, function (mapSeries) {
+                if (!data && mapSeries.getHostGeoModel() === mapOrGeoModel) {
+                    data = mapSeries.getData();
+                }
+            });
 
             var geo = mapOrGeoModel.coordinateSystem;
 
@@ -115,10 +150,18 @@ define(function (require) {
             var hoverItemStyleAccessPath = ['itemStyle', 'emphasis'];
             var labelAccessPath = ['label', 'normal'];
             var hoverLabelAccessPath = ['label', 'emphasis'];
+            var nameMap = {};
 
             zrUtil.each(geo.regions, function (region) {
 
-                var regionGroup = new graphic.Group();
+                // Consider in GeoJson properties.name may be duplicated, for example,
+                // there is multiple region named "United Kindom" or "France" (so many
+                // colonies). And it is not appropriate to merge them in geo, which
+                // will make them share the same label and bring trouble in label
+                // location calculation.
+                var regionGroup = nameMap[region.name]
+                    || (nameMap[region.name] = new graphic.Group());
+
                 var compoundPath = new graphic.CompoundPath({
                     shape: {
                         paths: []
@@ -178,7 +221,7 @@ define(function (require) {
                 // 2. In geo component
                 // 4. Region has no series legendSymbol, which will be add a showLabel flag in mapSymbolLayout
                 if (
-                    (!data || isDataNaN && (showLabel || hoverShowLabel))
+                    (isGeo || isDataNaN && (showLabel || hoverShowLabel))
                  || (itemLayout && itemLayout.showLabel)
                  ) {
                     var query = data ? dataIdx : region.name;
@@ -222,16 +265,21 @@ define(function (require) {
                     };
                 }
 
-                regionGroup.__region = region;
+                var groupRegions = regionGroup.__regions || (regionGroup.__regions = []);
+                groupRegions.push(region);
 
-                graphic.setHoverStyle(regionGroup, hoverItemStyle);
+                graphic.setHoverStyle(
+                    regionGroup,
+                    hoverItemStyle,
+                    {hoverSilentOnTouch: !!mapOrGeoModel.get('selectedMode')}
+                );
 
                 group.add(regionGroup);
             });
 
             this._updateController(mapOrGeoModel, ecModel, api);
 
-            updateMapSelectHandler(mapOrGeoModel, group, api, fromView);
+            updateMapSelectHandler(this, mapOrGeoModel, group, api, fromView);
 
             updateMapSelected(mapOrGeoModel, group);
         },
@@ -259,35 +307,39 @@ define(function (require) {
                 action[mainType + 'Id'] = mapOrGeoModel.id;
                 return action;
             }
-            controller.off('pan')
-                .on('pan', function (dx, dy) {
-                    api.dispatchAction(zrUtil.extend(makeActionBase(), {
-                        dx: dx,
-                        dy: dy
-                    }));
-                });
-            controller.off('zoom')
-                .on('zoom', function (zoom, mouseX, mouseY) {
-                    api.dispatchAction(zrUtil.extend(makeActionBase(), {
-                        zoom: zoom,
-                        originX: mouseX,
-                        originY: mouseY
-                    }));
 
-                    if (this._updateGroup) {
-                        var group = this.group;
-                        var scale = group.scale;
-                        group.traverse(function (el) {
-                            if (el.type === 'text') {
-                                el.attr('scale', [1 / scale[0], 1 / scale[1]]);
-                            }
-                        });
-                    }
-                }, this);
+            controller.off('pan').on('pan', function (dx, dy) {
+                this._mouseDownFlag = false;
 
-            controller.rectProvider = function () {
-                return geo.getViewRectAfterRoam();
-            };
+                api.dispatchAction(zrUtil.extend(makeActionBase(), {
+                    dx: dx,
+                    dy: dy
+                }));
+            }, this);
+
+            controller.off('zoom').on('zoom', function (zoom, mouseX, mouseY) {
+                this._mouseDownFlag = false;
+
+                api.dispatchAction(zrUtil.extend(makeActionBase(), {
+                    zoom: zoom,
+                    originX: mouseX,
+                    originY: mouseY
+                }));
+
+                if (this._updateGroup) {
+                    var group = this.group;
+                    var scale = group.scale;
+                    group.traverse(function (el) {
+                        if (el.type === 'text') {
+                            el.attr('scale', [1 / scale[0], 1 / scale[1]]);
+                        }
+                    });
+                }
+            }, this);
+
+            controller.setContainsPoint(function (x, y) {
+                return geo.getViewRectAfterRoam().contain(x, y);
+            });
         }
     };
 

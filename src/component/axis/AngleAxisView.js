@@ -40,7 +40,9 @@ define(function (require) {
             }
 
             zrUtil.each(elementList, function (name) {
-                if (angleAxisModel.get(name +'.show')) {
+                if (angleAxisModel.get(name +'.show')
+                    && (!angleAxis.scale.isBlank() || name === 'axisLine')
+                ) {
                     this['_' + name](angleAxisModel, polar, ticksAngles, radiusExtent);
                 }
             }, this);
@@ -82,7 +84,12 @@ define(function (require) {
             });
             this.group.add(graphic.mergePath(
                 lines, {
-                    style: tickModel.getModel('lineStyle').getLineStyle()
+                    style: zrUtil.defaults(
+                        tickModel.getModel('lineStyle').getLineStyle(),
+                        {
+                            stroke: angleAxisModel.get('axisLine.lineStyle.color')
+                        }
+                    )
                 }
             ));
         },
@@ -125,7 +132,7 @@ define(function (require) {
                     style: {
                         x: p[0],
                         y: p[1],
-                        fill: textStyleModel.getTextColor(),
+                        fill: textStyleModel.getTextColor() || angleAxisModel.get('axisLine.lineStyle.color'),
                         text: labels[i],
                         textAlign: labelTextAlign,
                         textVerticalAlign: labelTextBaseline,

@@ -2,13 +2,11 @@ define(function(require) {
     'use strict';
 
     var zrUtil = require('zrender/core/util');
-    var numberUtil = require('../../../util/number');
     var BrushController = require('../../helper/BrushController');
-    var BoundingRect = require('zrender/core/BoundingRect');
+    var BrushTargetManager = require('../../helper/BrushTargetManager');
     var history = require('../../dataZoom/history');
 
     var each = zrUtil.each;
-    var asc = numberUtil.asc;
 
     // Use dataZoomSelect
     require('../../dataZoomSelect');
@@ -17,10 +15,6 @@ define(function(require) {
     var DATA_ZOOM_ID_BASE = '\0_ec_\0toolbox-dataZoom_';
 
     function DataZoom(model, ecModel, api) {
-
-        this.model = model;
-        this.ecModel = ecModel;
-        this.api = api;
 
         /**
          * @private
@@ -31,9 +25,8 @@ define(function(require) {
             .mount();
 
         /**
-         * Is zoom active.
          * @private
-         * @type {Object}
+         * @type {boolean}
          */
         this._isZoomActive;
     }
@@ -53,7 +46,12 @@ define(function(require) {
 
     var proto = DataZoom.prototype;
 
-    proto.render = function (featureModel, ecModel, api) {
+    proto.render = function (featureModel, ecModel, api, payload) {
+        this.model = featureModel;
+        this.ecModel = ecModel;
+        this.api = api;
+
+        updateZoomBtnStatus(featureModel, ecModel, this, payload);
         updateBackBtnStatus(featureModel, ecModel);
     };
 
@@ -76,165 +74,144 @@ define(function(require) {
 
         zoom: function () {
             var nextActive = !this._isZoomActive;
-            var controller = this._brushController;
 
-            if (nextActive) {
-                this._isZoomActive = nextActive;
-                this.model.setIconStatus('zoom', 'emphasis');
-
-                controller.enableBrush({
-                    brushType: 'rect',
-                    brushStyle: {
-                        // FIXME
-                        // user customized?
-                        lineWidth: 3,
-                        stroke: '#333',
-                        fill: 'rgba(0,0,0,0.2)'
-                    },
-                    // FIXME
-                    // 是否应通过触发 action 的方式来互斥而非 onRelease？
-                    onRelease: zrUtil.bind(onRelease, this)
-                });
-            }
-            else {
-                controller.enableBrush(false);
-            }
-
-            function onRelease() {
-                this.model.setIconStatus('zoom', 'normal');
-                this._isZoomActive = false;
-            }
+            this.api.dispatchAction({
+                type: 'takeGlobalCursor',
+                key: 'dataZoomSelect',
+                dataZoomSelectActive: nextActive
+            });
         },
 
         back: function () {
-            this._dispatchAction(history.pop(this.ecModel));
+            this._dispatchZoomAction(history.pop(this.ecModel));
         }
     };
-
-    function prepareCoordInfo(grid, ecModel) {
-        // Default use the first axis.
-        // FIXME
-        var coordInfo = [
-            {axisModel: grid.getAxis('x').model, axisIndex: 0}, // x
-            {axisModel: grid.getAxis('y').model, axisIndex: 0}  // y
-        ];
-        coordInfo.grid = grid;
-
-        ecModel.eachComponent(
-            {mainType: 'dataZoom', subType: 'select'},
-            function (dzModel, dataZoomIndex) {
-                if (isTheAxis('xAxis', coordInfo[0].axisModel, dzModel, ecModel)) {
-                    coordInfo[0].dataZoomModel = dzModel;
-                }
-                if (isTheAxis('yAxis', coordInfo[1].axisModel, dzModel, ecModel)) {
-                    coordInfo[1].dataZoomModel = dzModel;
-                }
-            }
-        );
-
-        return coordInfo;
-    }
-
-    function isTheAxis(axisName, axisModel, dataZoomModel, ecModel) {
-        var axisIndex = dataZoomModel.get(axisName + 'Index');
-        return axisIndex != null
-            && ecModel.getComponent(axisName, axisIndex) === axisModel;
-    }
 
     /**
      * @private
      */
-    proto._onBrush = function (brushRanges, opt) {
-        if (!opt.isEnd || !brushRanges.length) {
+    proto._onBrush = function (areas, opt) {
+        if (!opt.isEnd || !areas.length) {
             return;
         }
-        var brushRange = brushRanges[0];
-
-        this._brushController.updateCovers([]); // remove cover
-
         var snapshot = {};
         var ecModel = this.ecModel;
 
-        // FIXME
-        // polar
+        this._brushController.updateCovers([]); // remove cover
 
-        ecModel.eachComponent('grid', function (gridModel, gridIndex) {
-            var grid = gridModel.coordinateSystem;
-            var coordInfo = prepareCoordInfo(grid, ecModel);
-            var selDataRange = pointToDataInCartesian(brushRange, coordInfo);
-
-            if (selDataRange) {
-                var xBatchItem = scaleCartesianAxis(selDataRange, coordInfo, 0, 'x');
-                var yBatchItem = scaleCartesianAxis(selDataRange, coordInfo, 1, 'y');
-
-                xBatchItem && (snapshot[xBatchItem.dataZoomId] = xBatchItem);
-                yBatchItem && (snapshot[yBatchItem.dataZoomId] = yBatchItem);
+        var brushTargetManager = new BrushTargetManager(
+            retrieveAxisSetting(this.model.option), ecModel, {include: ['grid']}
+        );
+        brushTargetManager.matchOutputRanges(areas, ecModel, function (area, coordRange, coordSys) {
+            if (coordSys.type !== 'cartesian2d') {
+                return;
             }
-        }, this);
+
+            var brushType = area.brushType;
+            if (brushType === 'rect') {
+                setBatch('x', coordSys, coordRange[0]);
+                setBatch('y', coordSys, coordRange[1]);
+            }
+            else {
+                setBatch(({lineX: 'x', lineY: 'y'})[brushType], coordSys, coordRange);
+            }
+        });
 
         history.push(ecModel, snapshot);
 
-        this._dispatchAction(snapshot);
-    };
+        this._dispatchZoomAction(snapshot);
 
-    function pointToDataInCartesian(brushRange, coordInfo) {
-        var grid = coordInfo.grid;
-        var range = brushRange.range;
-
-        var selRect = new BoundingRect(
-            range[0][0],
-            range[1][0],
-            range[0][1] - range[0][0],
-            range[1][1] - range[1][0]
-        );
-        if (!selRect.intersect(grid.getRect())) {
-            return;
-        }
-        var cartesian = grid.getCartesian(coordInfo[0].axisIndex, coordInfo[1].axisIndex);
-        var dataLeftTop = cartesian.pointToData([range[0][0], range[1][0]], true);
-        var dataRightBottom = cartesian.pointToData([range[0][1], range[1][1]], true);
-
-        return [
-            asc([dataLeftTop[0], dataRightBottom[0]]), // x, using asc to handle inverse
-            asc([dataLeftTop[1], dataRightBottom[1]]) // y, using asc to handle inverse
-        ];
-    }
-
-    function scaleCartesianAxis(selDataRange, coordInfo, dimIdx, dimName) {
-        var dimCoordInfo = coordInfo[dimIdx];
-        var dataZoomModel = dimCoordInfo.dataZoomModel;
-
-        if (dataZoomModel) {
-            return {
+        function setBatch(dimName, coordSys, minMax) {
+            var dataZoomModel = findDataZoom(dimName, coordSys.getAxis(dimName).model, ecModel);
+            dataZoomModel && (snapshot[dataZoomModel.id] = {
                 dataZoomId: dataZoomModel.id,
-                startValue: selDataRange[dimIdx][0],
-                endValue: selDataRange[dimIdx][1]
-            };
+                startValue: minMax[0],
+                endValue: minMax[1]
+            });
         }
-    }
+
+        function findDataZoom(dimName, axisModel, ecModel) {
+            var found;
+            ecModel.eachComponent({mainType: 'dataZoom', subType: 'select'}, function (dzModel) {
+                var has = dzModel.getAxisModel(dimName, axisModel.componentIndex);
+                has && (found = dzModel);
+            });
+            return found;
+        }
+    };
 
     /**
      * @private
      */
-    proto._dispatchAction = function (snapshot) {
+    proto._dispatchZoomAction = function (snapshot) {
         var batch = [];
 
-        each(snapshot, function (batchItem) {
-            batch.push(batchItem);
+        // Convert from hash map to array.
+        each(snapshot, function (batchItem, dataZoomId) {
+            batch.push(zrUtil.clone(batchItem));
         });
 
         batch.length && this.api.dispatchAction({
             type: 'dataZoom',
             from: this.uid,
-            batch: zrUtil.clone(batch, true)
+            batch: batch
         });
     };
+
+    function retrieveAxisSetting(option) {
+        var setting = {};
+        // Compatible with previous setting: null => all axis, false => no axis.
+        zrUtil.each(['xAxisIndex', 'yAxisIndex'], function (name) {
+            setting[name] = option[name];
+            setting[name] == null && (setting[name] = 'all');
+            (setting[name] === false || setting[name] === 'none') && (setting[name] = []);
+        });
+        return setting;
+    }
 
     function updateBackBtnStatus(featureModel, ecModel) {
         featureModel.setIconStatus(
             'back',
             history.count(ecModel) > 1 ? 'emphasis' : 'normal'
         );
+    }
+
+    function updateZoomBtnStatus(featureModel, ecModel, view, payload) {
+        var zoomActive = view._isZoomActive;
+
+        if (payload && payload.type === 'takeGlobalCursor') {
+            zoomActive = payload.key === 'dataZoomSelect'
+                ? payload.dataZoomSelectActive : false;
+        }
+
+        view._isZoomActive = zoomActive;
+
+        featureModel.setIconStatus('zoom', zoomActive ? 'emphasis' : 'normal');
+
+        var brushTargetManager = new BrushTargetManager(
+            retrieveAxisSetting(featureModel.option), ecModel, {include: ['grid']}
+        );
+
+        view._brushController
+            .setPanels(brushTargetManager.makePanelOpts(function (targetInfo) {
+                return (targetInfo.xAxisDeclared && !targetInfo.yAxisDeclared)
+                    ? 'lineX'
+                    : (!targetInfo.xAxisDeclared && targetInfo.yAxisDeclared)
+                    ? 'lineY'
+                    : 'rect';
+            }))
+            .enableBrush(
+                zoomActive
+                ? {
+                    brushType: 'auto',
+                    brushStyle: {
+                        // FIXME user customized?
+                        lineWidth: 0,
+                        fill: 'rgba(0,0,0,0.2)'
+                    }
+                }
+                : false
+            );
     }
 
 
@@ -271,14 +248,19 @@ define(function(require) {
                 return;
             }
 
+            // Try not to modify model, because it is not merged yet.
             var axisIndicesName = axisName + 'Index';
             var givenAxisIndices = dataZoomOpt[axisIndicesName];
-            if (givenAxisIndices != null && !zrUtil.isArray(givenAxisIndices)) {
-                givenAxisIndices = givenAxisIndices === false ? [] : [givenAxisIndices];
+            if (givenAxisIndices != null
+                && givenAxisIndices != 'all'
+                && !zrUtil.isArray(givenAxisIndices)
+            ) {
+                givenAxisIndices = (givenAxisIndices === false || givenAxisIndices === 'none') ? [] : [givenAxisIndices];
             }
 
             forEachComponent(axisName, function (axisOpt, axisIndex) {
                 if (givenAxisIndices != null
+                    && givenAxisIndices != 'all'
                     && zrUtil.indexOf(givenAxisIndices, axisIndex) === -1
                 ) {
                     return;

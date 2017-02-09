@@ -3,7 +3,6 @@ define(function (require) {
     var zrUtil = require('zrender/core/util');
     var BrushController = require('../helper/BrushController');
     var echarts = require('../../echarts');
-    var helper = require('./helper');
 
     return echarts.extendComponentView({
 
@@ -71,10 +70,10 @@ define(function (require) {
         /**
          * @private
          */
-        _onBrush: function (brushRanges, opt) {
+        _onBrush: function (areas, opt) {
             var modelId = this.model.id;
 
-            helper.setCoordRanges(brushRanges, this.ecModel);
+            this.model.brushTargetManager.setOutputRanges(areas, this.ecModel);
 
             // Action is not dispatched on drag end, because the drag end
             // emits the same params with the last drag move event, and
@@ -83,7 +82,7 @@ define(function (require) {
             (!opt.isEnd || opt.removeOnClick) && this.api.dispatchAction({
                 type: 'brush',
                 brushId: modelId,
-                brushRanges: zrUtil.clone(brushRanges),
+                areas: zrUtil.clone(areas),
                 $from: modelId
             });
         }
@@ -93,9 +92,9 @@ define(function (require) {
     function updateController(brushModel, ecModel, api, payload) {
         // Do not update controller when drawing.
         (!payload || payload.$from !== brushModel.id) && this._brushController
-            .setPanels(helper.makePanelOpts(brushModel, ecModel))
+            .setPanels(brushModel.brushTargetManager.makePanelOpts())
             .enableBrush(brushModel.brushOption)
-            .updateCovers(helper.setPanelId(brushModel.brushRanges));
+            .updateCovers(brushModel.areas.slice());
     }
 
 });

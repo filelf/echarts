@@ -10,7 +10,6 @@ define(function(require) {
     var colorTool = require('zrender/tool/color');
     var matrix = require('zrender/core/matrix');
     var vector = require('zrender/core/vector');
-    var Gradient = require('zrender/graphic/Gradient');
 
     var graphic = {};
 
@@ -93,7 +92,7 @@ define(function(require) {
                 rect.height = height;
             }
 
-            this.resizePath(path, rect);
+            graphic.resizePath(path, rect);
         }
         return path;
     };
@@ -312,7 +311,11 @@ define(function(require) {
     /**
      * @inner
      */
-    function onElementMouseOver() {
+    function onElementMouseOver(e) {
+        if (this.__hoverSilentOnTouch && e.zrByTouch) {
+            return;
+        }
+
         // Only if element is not in emphasis status
         !this.__isEmphasis && doEnterHover(this);
     }
@@ -320,7 +323,11 @@ define(function(require) {
     /**
      * @inner
      */
-    function onElementMouseOut() {
+    function onElementMouseOut(e) {
+        if (this.__hoverSilentOnTouch && e.zrByTouch) {
+            return;
+        }
+
         // Only if element is not in emphasis status
         !this.__isEmphasis && doLeaveHover(this);
     }
@@ -342,11 +349,25 @@ define(function(require) {
     }
 
     /**
-     * Set hover style of element
+     * Set hover style of element.
+     * This method can be called repeatly without side-effects.
      * @param {module:zrender/Element} el
      * @param {Object} [hoverStyle]
+     * @param {Object} [opt]
+     * @param {boolean} [opt.hoverSilentOnTouch=false]
+     *        In touch device, mouseover event will be trigger on touchstart event
+     *        (see module:zrender/dom/HandlerProxy). By this mechanism, we can
+     *        conviniently use hoverStyle when tap on touch screen without additional
+     *        code for compatibility.
+     *        But if the chart/component has select feature, which usually also use
+     *        hoverStyle, there might be conflict between 'select-highlight' and
+     *        'hover-highlight' especially when roam is enabled (see geo for example).
+     *        In this case, hoverSilentOnTouch should be used to disable hover-highlight
+     *        on touch device.
      */
-    graphic.setHoverStyle = function (el, hoverStyle) {
+    graphic.setHoverStyle = function (el, hoverStyle, opt) {
+        el.__hoverSilentOnTouch = opt && opt.hoverSilentOnTouch;
+
         el.type === 'group'
             ? el.traverse(function (child) {
                 if (child.type !== 'group') {
@@ -354,7 +375,8 @@ define(function(require) {
                 }
             })
             : setElementHoverStl(el, hoverStyle);
-        // Remove previous bound handlers
+
+        // Duplicated function will be auto-ignored, see Eventful.js.
         el.on('mouseover', onElementMouseOver)
           .on('mouseout', onElementMouseOut);
 
@@ -371,12 +393,14 @@ define(function(require) {
      */
     graphic.setText = function (textStyle, labelModel, color) {
         var labelPosition = labelModel.getShallow('position') || 'inside';
+        var labelOffset = labelModel.getShallow('offset');
         var labelColor = labelPosition.indexOf('inside') >= 0 ? 'white' : color;
         var textStyleModel = labelModel.getModel('textStyle');
         zrUtil.extend(textStyle, {
             textDistance: labelModel.getShallow('distance') || 5,
             textFont: textStyleModel.getFont(),
             textPosition: labelPosition,
+            textOffset: labelOffset,
             textFill: textStyleModel.getTextColor() || labelColor
         });
     };
@@ -386,25 +410,28 @@ define(function(require) {
             cb = dataIndex;
             dataIndex = null;
         }
-        var animationEnabled = animatableModel
-            && (
-                animatableModel.ifEnableAnimation
-                ? animatableModel.ifEnableAnimation()
-                // Directly use animation property
-                : animatableModel.getShallow('animation')
-            );
+        // Do not check 'animation' property directly here. Consider this case:
+        // animation model is an `itemModel`, whose does not have `isAnimationEnabled`
+        // but its parent model (`seriesModel`) does.
+        var animationEnabled = animatableModel && animatableModel.isAnimationEnabled();
 
         if (animationEnabled) {
             var postfix = isUpdate ? 'Update' : '';
-            var duration = animatableModel
-                && animatableModel.getShallow('animationDuration' + postfix);
-            var animationEasing = animatableModel
-                && animatableModel.getShallow('animationEasing' + postfix);
-            var animationDelay = animatableModel
-                && animatableModel.getShallow('animationDelay' + postfix);
+            var duration = animatableModel.getShallow('animationDuration' + postfix);
+            var animationEasing = animatableModel.getShallow('animationEasing' + postfix);
+            var animationDelay = animatableModel.getShallow('animationDelay' + postfix);
             if (typeof animationDelay === 'function') {
-                animationDelay = animationDelay(dataIndex);
+                animationDelay = animationDelay(
+                    dataIndex,
+                    animatableModel.getAnimationDelayParams
+                        ? animatableModel.getAnimationDelayParams(el, dataIndex)
+                        : null
+                );
             }
+            if (typeof duration === 'function') {
+                duration = duration(dataIndex);
+            }
+
             duration > 0
                 ? el.animateTo(props, duration, animationDelay || 0, animationEasing, cb)
                 : (el.attr(props), cb && cb());
@@ -414,6 +441,7 @@ define(function(require) {
             cb && cb();
         }
     }
+
     /**
      * Update graphic element properties with or without animation according to the configuration in series
      * @param {module:zrender/Element} el
@@ -502,6 +530,52 @@ define(function(require) {
         return Math.abs(vertex[0]) > Math.abs(vertex[1])
             ? (vertex[0] > 0 ? 'right' : 'left')
             : (vertex[1] > 0 ? 'bottom' : 'top');
+    };
+
+    /**
+     * Apply group transition animation from g1 to g2
+     */
+    graphic.groupTransition = function (g1, g2, animatableModel, cb) {
+        if (!g1 || !g2) {
+            return;
+        }
+
+        function getElMap(g) {
+            var elMap = {};
+            g.traverse(function (el) {
+                if (!el.isGroup && el.anid) {
+                    elMap[el.anid] = el;
+                }
+            });
+            return elMap;
+        }
+        function getAnimatableProps(el) {
+            var obj = {
+                position: vector.clone(el.position),
+                rotation: el.rotation
+            };
+            if (el.shape) {
+                obj.shape = zrUtil.extend({}, el.shape);
+            }
+            return obj;
+        }
+        var elMap1 = getElMap(g1);
+
+        g2.traverse(function (el) {
+            if (!el.isGroup && el.anid) {
+                var oldEl = elMap1[el.anid];
+                if (oldEl) {
+                    var newProp = getAnimatableProps(el);
+                    el.attr(getAnimatableProps(oldEl));
+                    graphic.updateProps(el, newProp, animatableModel, el.dataIndex);
+                }
+                // else {
+                //     if (el.previousProps) {
+                //         graphic.updateProps
+                //     }
+                // }
+            }
+        });
     };
 
     return graphic;

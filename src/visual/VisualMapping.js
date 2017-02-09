@@ -136,7 +136,7 @@ define(function (require) {
                     thisOption.mappingMethod === 'category'
                         ? function (value, isNormalized) {
                             !isNormalized && (value = this._normalizeData(value));
-                            return doMapCategory(this, value);
+                            return doMapCategory.call(this, value);
                         }
                         : function (value, isNormalized, out) {
                             // If output rgb array
@@ -290,7 +290,7 @@ define(function (require) {
 
         if (!isCategory
             && visualArr.length === 1
-            && !(thisOption.type in doNotNeedPair)
+            && !doNotNeedPair.hasOwnProperty(thisOption.type)
         ) {
             // Do not care visualArr.length === 0, which is illegal.
             visualArr[1] = visualArr[0];
@@ -310,7 +310,7 @@ define(function (require) {
         };
     }
 
-    function doMapToArray(arr, normalized) {
+    function doMapToArray(normalized) {
         var visual = this.option.visual;
         return visual[
             Math.round(linearMap(normalized, [0, 1], [0, visual.length - 1], true))
@@ -377,7 +377,7 @@ define(function (require) {
 
         piecewise: function (value) {
             var pieceList = this.option.pieceList;
-            var pieceIndex = VisualMapping.findPieceIndex(value, pieceList);
+            var pieceIndex = VisualMapping.findPieceIndex(value, pieceList, true);
             if (pieceIndex != null) {
                 return linearMap(pieceIndex, [0, pieceList.length - 1], [0, 1], true);
             }
@@ -394,6 +394,20 @@ define(function (require) {
     };
 
 
+
+    /**
+     * List available visual types.
+     *
+     * @public
+     * @return {Array.<string>}
+     */
+    VisualMapping.listVisualTypes = function () {
+        var visualTypes = [];
+        zrUtil.each(visualHandlers, function (handler, key) {
+            visualTypes.push(key);
+        });
+        return visualTypes;
+    };
 
     /**
      * @public
@@ -508,41 +522,82 @@ define(function (require) {
     };
 
     /**
-     * @public {Array.<Object>} [{value: ..., interval: [min, max]}, ...]
+     * @param {number} value
+     * @param {Array.<Object>} pieceList [{value: ..., interval: [min, max]}, ...]
+     *                         Always from small to big.
+     * @param {boolean} [findClosestWhenOutside=false]
      * @return {number} index
      */
-    VisualMapping.findPieceIndex = function (value, pieceList) {
-        // value has high priority.
+    VisualMapping.findPieceIndex = function (value, pieceList, findClosestWhenOutside) {
+        var possibleI;
+        var abs = Infinity;
+
+        // value has the higher priority.
         for (var i = 0, len = pieceList.length; i < len; i++) {
-            var piece = pieceList[i];
-            if (piece.value != null && piece.value === value) {
-                return i;
+            var pieceValue = pieceList[i].value;
+            if (pieceValue != null) {
+                if (pieceValue === value
+                    // FIXME
+                    // It is supposed to compare value according to value type of dimension,
+                    // but currently value type can exactly be string or number.
+                    // Compromise for numeric-like string (like '12'), especially
+                    // in the case that visualMap.categories is ['22', '33'].
+                    || (typeof pieceValue === 'string' && pieceValue === value + '')
+                ) {
+                    return i;
+                }
+                findClosestWhenOutside && updatePossible(pieceValue, i);
             }
         }
 
         for (var i = 0, len = pieceList.length; i < len; i++) {
             var piece = pieceList[i];
             var interval = piece.interval;
+            var close = piece.close;
+
             if (interval) {
                 if (interval[0] === -Infinity) {
-                    if (value < interval[1]) {
+                    if (littleThan(close[1], value, interval[1])) {
                         return i;
                     }
                 }
                 else if (interval[1] === Infinity) {
-                    if (interval[0] < value) {
+                    if (littleThan(close[0], interval[0], value)) {
                         return i;
                     }
                 }
                 else if (
-                    piece.interval[0] <= value
-                    && value <= piece.interval[1]
+                    littleThan(close[0], interval[0], value)
+                    && littleThan(close[1], value, interval[1])
                 ) {
                     return i;
                 }
+                findClosestWhenOutside && updatePossible(interval[0], i);
+                findClosestWhenOutside && updatePossible(interval[1], i);
             }
         }
+
+        if (findClosestWhenOutside) {
+            return value === Infinity
+                ? pieceList.length - 1
+                : value === -Infinity
+                ? 0
+                : possibleI;
+        }
+
+        function updatePossible(val, index) {
+            var newAbs = Math.abs(val - value);
+            if (newAbs < abs) {
+                abs = newAbs;
+                possibleI = index;
+            }
+        }
+
     };
+
+    function littleThan(close, a, b) {
+        return close ? a <= b : a < b;
+    }
 
     return VisualMapping;
 
